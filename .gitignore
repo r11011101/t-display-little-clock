@@ -1,0 +1,16 @@
+# 編譯产物與暫存檔, 上傳 GitHub 前不需要
+# (若用 Arduino CLI / CI 建置)
+build/
+*.elf
+*.bin
+*.map
+*.partitions.csv
+*.flash_summary.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+.DS_Store

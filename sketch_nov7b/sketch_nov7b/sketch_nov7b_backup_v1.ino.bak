@@ -1,0 +1,150 @@
+/*
+ * T-Display-S3（原版, ST7789V 170x320, 8-bit 並列）— NTP 時鐘
+ * 適用 Arduino-ESP32 core 3.x（測試目標 v3.3.x）+ TFT_eSPI >= 2.5.43
+ *
+ * ── 設定步驟（一次就好）──
+ * 1. Arduino IDE 安裝 TFT_eSPI 函式庫。
+ * 2. 開啟檔案: <libraries>/TFT_eSPI/User_Setup_Select.h
+ *    註解掉 `#include <User_Setup.h>` 那一行,
+ *    並取消註解: #include <User_Setups/Setup206_LilyGo_T_Display_S3.h>
+ *    （Setup206 已內建本板全部接腳: CS=6 DC=7 RST=5 WR=8 RD=9 D0-D7=39..48, BL=38）
+ * 3. Board 選 "T-Display-S3"（或 ESP32S3 Dev Module + USB CDC On Boot = Enabled）。
+ *
+ * ── 本板必守 ──
+ *   GPIO15 = 週邊電源: 必須 HIGH, 否則螢幕不亮。
+ *   背光由 Setup206 的 TFT_BACKLIGHT_ON HIGH 處理, PWM 用 core 3.x 的 ledcAttach。
+ *
+ * 按鍵: BOOT(GPIO0)=切橫/直向, IO14=循環調背光亮度。
+ */
+
+#include <WiFi.h>
+#include <TFT_eSPI.h>
+
+#define PWR_ON 15
+#define BTN_A  0
+#define BTN_B  14
+#define TFT_BL_PIN 38        // 與 Setup206 一致
+
+TFT_eSPI tft = TFT_eSPI();
+
+const char *WIFI_SSID = "TP-Link_595A";
+const char *WIFI_PASS = "10811114";
+
+bool landscape = true;
+uint32_t blPct = 100;        // 背光百分比 20..100
+
+void setBacklight(uint32_t pct) {          // core 3.x PWM API
+  static bool attached = false;
+  if (!attached) { ledcAttach(TFT_BL_PIN, 5000, 8); attached = true; }
+  ledcWrite(TFT_BL_PIN, map(pct, 0, 100, 0, 255));
+}
+
+void drawFrame() {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setCursor(4, 2);
+  tft.print("T-DS3");
+  tft.drawLine(0, 22, tft.width(), 22, TFT_DARKGREY);
+}
+
+char lastMin[9] = "?????";      // 上次畫的 HH:MM
+int  lastSec = -1, clockTx = 0, clockTy = 0, charW = 0;
+
+void drawClock() {
+  int w = tft.width(), h = tft.height();
+  time_t now = time(nullptr);
+  if (now < 100000) return;                 // NTP 尚未校時
+  tm *lt = localtime(&now);
+
+  char big[9];   snprintf(big, sizeof(big), "%02d:%02d", lt->tm_hour, lt->tm_min);
+
+  int tsz = landscape ? 5 : 4;              // textSize（橫向: 9字元×29px=261 < 320, 不溢出）
+  tft.setTextSize(tsz);
+  int cw = tsz * 5 + (tsz - 1);             // TFT_eSPI GLCD 單字元實際寬度(含字距)
+  int tw = (strlen(big) + 3) * cw;          // HH:MM + :SS
+  int tx = (w - tw) / 2, ty = (h - tsz * 8) / 2 + 10;
+
+  if (strcmp(big, lastMin) != 0) {          // ← 分鐘變化才重畫整行（每秒只閃 2 個數字）
+    tft.fillRect(0, ty - 4, w, tsz * 8 + 8, TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(tx, ty);
+    tft.print(big);                                         // HH:MM 精確置中
+    tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+    tft.print(":");                                        // 冒號固定不擦
+    strcpy(lastMin, big);
+    clockTx = tx; clockTy = ty; charW = cw;
+    lastSec = -1;                                          // 強制重畫秒
+  }
+
+  if (lt->tm_sec != lastSec) {              // 每秒只覆寫 SS 兩個字元, 無大面積黑閃
+    tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+    tft.setCursor(clockTx + 6 * charW, clockTy);
+    tft.printf("%02d", lt->tm_sec);
+    lastSec = lt->tm_sec;
+  }
+
+  static const char *WD[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+  static char lastDate[20] = "";
+  char date[20]; snprintf(date, sizeof(date), "%04d/%02d/%02d %s",
+      lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, WD[lt->tm_wday]);
+  if (strcmp(date, lastDate) != 0) {        // 每天才重畫日期列
+    tft.fillRect(0, h - 30, w, 26, TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(TFT_SILVER, TFT_BLACK);
+    tft.setCursor((w - strlen(date) * 12) / 2, h - 26);
+    tft.print(date);
+    strcpy(lastDate, date);
+  }
+}
+
+void setup() {
+  pinMode(PWR_ON, OUTPUT); digitalWrite(PWR_ON, HIGH);   // ← 關鍵: 週邊電源
+  pinMode(BTN_A, INPUT_PULLUP);
+  pinMode(BTN_B, INPUT_PULLUP);
+
+  tft.init();
+  tft.setRotation(1);
+  setBacklight(blPct);
+  drawFrame();
+
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setCursor(4, 26);
+  tft.print("WiFi..");
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  for (int i = 0; i < 60 && WiFi.status() != WL_CONNECTED; i++) delay(500);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    configTime(8 * 3600, 0, "pool.ntp.org", "time.google.com");  // 台北 UTC+8
+    tft.setCursor(4, 26);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.printf("NTP %s", WiFi.localIP().toString().c_str());
+  } else {
+    tft.setCursor(4, 26);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.print("WiFi FAIL");                 // 沒網路: 走內部時鐘(時間不準)
+  }
+  delay(800);
+}
+
+void loop() {
+  static uint32_t lastBtn = 0;
+  uint32_t ms = millis();
+  if (ms - lastBtn > 250) {                 // 按鍵去抖
+    if (!digitalRead(BTN_A)) {
+      landscape = !landscape;
+      tft.setRotation(landscape ? 1 : 3);
+      drawFrame();
+      lastBtn = ms;
+    }
+    if (!digitalRead(BTN_B)) {
+      blPct = (blPct >= 100) ? 20 : min<uint32_t>(blPct + 20, 100);
+      setBacklight(blPct);
+      lastBtn = ms;
+    }
+  }
+  drawClock();
+  delay(100);                               // 輪詢; 實際繪圖只在內容變化時發生
+}
