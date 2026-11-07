@@ -30,10 +30,10 @@ bool usePsram = false;
 
 // ⚠ 開給別人看時這兩行會暴露你的 Wi-Fi 名稱與密碼
 #ifndef WIFI_SSID
-#define WIFI_SSID "TP-Link_595A"   // 可在 Arduino IDE 加 -DWIFI_SSID=\"xxx\" 覆蓋
+#define WIFI_SSID "xxxxxxxx"   // 可在 Arduino IDE 加 -DWIFI_SSID=\"xxx\" 覆蓋
 #endif
 #ifndef WIFI_PASS
-#define WIFI_PASS "10811114"
+#define WIFI_PASS "xxxxxxxx"
 #endif
 
 
